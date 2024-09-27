@@ -21,13 +21,13 @@ async fn handle_ws_message(
 
     match parsed_msg {
         IncomingMessage::Login(login_cmd) => {
-            conn_handle
-                .login(
-                    &login_cmd.user_token,
-                    &login_cmd.device_token,
-                    &login_cmd.secret_key,
-                )
-                .await;
+            conn_handle.login(&login_cmd).await;
+        }
+        IncomingMessage::Sync { device_pts } => {
+            conn_handle.subscribe_or_sync_updates(device_pts).await;
+        }
+        IncomingMessage::SendMessage(send_msg_cmd) => {
+            conn_handle.send_message(&send_msg_cmd).await;
         }
     };
 
