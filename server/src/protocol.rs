@@ -45,6 +45,7 @@ pub enum OutgoingMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncUpdates {
     pub too_long: bool,
+    pub synced: bool,
     pub updates: Vec<Update>,
 }
 

@@ -3,11 +3,13 @@ use std::collections::HashMap;
 use std::sync::atomic::{self, AtomicU64};
 use std::sync::{Arc, Weak};
 
+use async_trait::async_trait;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::mailbox::Mailbox;
+use crate::mailbox::{Mailbox, Subscriber};
 use crate::protocol::{
-    LoginCommand, NewMessageUpdate, OutgoingMessage, SendMessageCommand, SyncUpdates, UpdatePayload,
+    LoginCommand, NewMessageUpdate, OutgoingMessage, SendMessageCommand, SyncUpdates, Update,
+    UpdatePayload,
 };
 
 struct UserState {
@@ -178,7 +180,7 @@ impl ConnectionHandle {
         state.login(self, cmd).await;
     }
 
-    pub async fn subscribe_or_sync_updates(&self, device_pts: u64) {
+    pub async fn subscribe_or_sync_updates(self: &Arc<Self>, device_pts: u64) {
         let id = self.id();
         info!("[{id}] request to subscribe or sync updates (device_pts: {device_pts})");
 
@@ -189,9 +191,16 @@ impl ConnectionHandle {
         };
         drop(mailbox_lock);
 
-        match mailbox.subscribe_or_sync(device_pts).await {
+        let subscriber = Arc::<Self>::downgrade(self);
+        match mailbox.subscribe_or_sync(device_pts, subscriber).await {
             Ok(_) => {
                 info!("[{id}] update subscription started");
+                self.send_event(OutgoingMessage::SyncUpdates(SyncUpdates {
+                    too_long: false,
+                    synced: true,
+                    updates: vec![],
+                }))
+                .await;
             }
             Err(out_of_sync) => {
                 info!(
@@ -201,6 +210,7 @@ impl ConnectionHandle {
                 );
                 self.send_event(OutgoingMessage::SyncUpdates(SyncUpdates {
                     too_long: out_of_sync.too_long,
+                    synced: false,
                     updates: out_of_sync.updates,
                 }))
                 .await;
@@ -242,5 +252,13 @@ impl Drop for ConnectionHandle {
 
             state.broadcast_device_offline(id).await;
         });
+    }
+}
+
+#[async_trait]
+impl Subscriber for ConnectionHandle {
+    async fn on_receive_update(&self, update: &Update) {
+        let update = update.clone();
+        self.send_event(OutgoingMessage::Update(update)).await;
     }
 }

@@ -1,8 +1,33 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
+use std::sync::Weak;
 
+use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::protocol::{Update, UpdatePayload};
+
+#[async_trait]
+pub trait Subscriber: Send + Sync {
+    async fn on_receive_update(&self, update: &Update);
+}
+
+struct AnySubscriber(Weak<dyn Subscriber>);
+
+impl Hash for AnySubscriber {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let ptr = self.0.as_ptr();
+        ptr.hash(state);
+    }
+}
+
+impl PartialEq for AnySubscriber {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+}
+
+impl Eq for AnySubscriber {}
 
 pub struct OutOfSync {
     pub too_long: bool,
@@ -18,6 +43,8 @@ struct Inner {
     queue: VecDeque<u64>,
     update_map: HashMap<u64, Update>,
     pts: u64,
+
+    subscribers: HashSet<AnySubscriber>,
 }
 
 impl Mailbox {
@@ -27,6 +54,7 @@ impl Mailbox {
                 queue: VecDeque::with_capacity(100),
                 update_map: HashMap::with_capacity(100),
                 pts: 0,
+                subscribers: Default::default(),
             }),
         }
     }
@@ -43,16 +71,26 @@ impl Mailbox {
         };
         debug!("did post update: {update:?}");
 
+        for subscriber in &inner_lock.subscribers {
+            if let Some(subscriber) = subscriber.0.upgrade() {
+                subscriber.on_receive_update(&update).await;
+            }
+        }
+
         inner_lock.update_map.insert(new_pts, update);
         inner_lock.queue.push_back(new_pts);
     }
 
-    pub async fn subscribe_or_sync(&self, device_pts: u64) -> Result<(), OutOfSync> {
-        let inner_lock = self.inner.lock().await;
+    pub async fn subscribe_or_sync(
+        &self,
+        device_pts: u64,
+        subscriber: Weak<dyn Subscriber>,
+    ) -> Result<(), OutOfSync> {
+        let mut inner_lock = self.inner.lock().await;
 
         let Some(front_pts) = inner_lock.queue.front().copied() else {
-            // TODO: implement subscription.
             // TODO: read from persistent pts.
+            inner_lock.subscribers.insert(AnySubscriber(subscriber));
             return Ok(());
         };
 
@@ -76,7 +114,7 @@ impl Mailbox {
         }
 
         if updates.is_empty() {
-            // TODO: implement subscription.
+            inner_lock.subscribers.insert(AnySubscriber(subscriber));
             return Ok(());
         }
 
