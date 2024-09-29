@@ -29,6 +29,9 @@ pub struct SendMessageCommand {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event")]
 pub enum OutgoingMessage {
+    #[serde(rename = "logged_in")]
+    LoggedIn,
+
     #[serde(rename = "device_online")]
     DeviceOnline,
 

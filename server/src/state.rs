@@ -91,6 +91,7 @@ impl AppState {
         *conn_handle.user_token.write().await = Some(cmd.user_token.to_owned());
 
         self.broadcast_device_online(conn_handle.id).await;
+        conn_handle.send_event(OutgoingMessage::LoggedIn).await;
     }
 
     async fn send_message(
