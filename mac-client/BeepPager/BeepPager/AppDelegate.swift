@@ -33,7 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsWindow = NSWindow(contentViewController: controller)
         settingsWindow.title = "Settings"
         settingsWindow.styleMask.remove([.miniaturizable, .resizable])
-        settingsWindow.setContentSize(.init(width: 300, height: 200))
+        settingsWindow.setContentSize(.init(width: 400, height: 300))
         settingsWindow.makeKeyAndOrderFront(nil)
         settingsWindow.center()
         self.settingsWindow = settingsWindow
