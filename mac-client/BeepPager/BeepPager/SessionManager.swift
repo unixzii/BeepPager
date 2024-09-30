@@ -44,6 +44,8 @@ final class SessionManager {
     
     static let `default` = SessionManager()
     
+    private var syncManager: SyncManager!
+    
     private let connection: Connection = .init()
     private var isConnected: Bool = false
     private var connectedFuture: UnsafeFutureSubject<(), any Error>?
@@ -69,6 +71,8 @@ final class SessionManager {
         self.signingInState = stateMachine.addState(with: "Signing In")
         self.signedInState = stateMachine.addState(with: "Signed In")
         self.closingState = stateMachine.addState(with: "Closing")
+        
+        self.syncManager = .init(syncCoordinator: self)
         
         prepareAndStartStateMachine()
         observeConnectionState()
@@ -144,6 +148,12 @@ private extension SessionManager {
             }
             return handleSigningInData(data)
         }
+        stateMachine.addTransition(from: signedInState, when: .dataReceived) { [unowned self] event in
+            guard case let .dataReceived(data) = event else {
+                fatalError("Unexpected event")
+            }
+            return handleData(data)
+        }
         stateMachine.addTransition(from: closingState, to: idleState, when: .disconnected)
         
         stateMachine.start(with: idleState)
@@ -206,18 +216,28 @@ private extension SessionManager {
         sendCommand(.login(loginCommand))
     }
     
-    private func handleSigningInData(_ data: Data) -> ConnectionStateMachine.State {
+    private func decodeIncomingMessage(from data: Data) -> Result<IncomingMessage, any Error> {
         do {
             let message = try JSONDecoder().decode(IncomingMessage.self, from: data)
-            switch message {
-            case .loggedIn:
-                return signedInState
-            }
+            return .success(message)
         } catch {
             logger.error("Failed to decode incoming message: \(error)")
+            return .failure(error)
+        }
+    }
+    
+    private func handleSigningInData(_ data: Data) -> ConnectionStateMachine.State {
+        guard let message = try? decodeIncomingMessage(from: data).get() else {
+            return closingState
         }
         
-        return closingState
+        switch message {
+        case .loggedIn:
+            return signedInState
+        default:
+            logger.error("\(#function): Unexpected message type at this stage")
+            return closingState
+        }
     }
     
     private func handleSignedIn() {
@@ -225,5 +245,43 @@ private extension SessionManager {
             fatalError("Internal state is inconsistent")
         }
         connectedFuture.resolve(())
+        
+        syncManager.performSync()
+    }
+    
+    private func handleData(_ data: Data) -> ConnectionStateMachine.State {
+        guard let message = try? decodeIncomingMessage(from: data).get() else {
+            return closingState
+        }
+        
+        switch message {
+        case .syncUpdates(let syncUpdates):
+            syncManager.handleSyncResult(syncUpdates)
+        default:
+            logger.error("\(#function): Unexpected message type at this stage")
+            return closingState
+        }
+        
+        return signedInState
+    }
+}
+
+// MARK: - Updates Syncing
+extension SessionManager: SyncCoordinator {
+    
+    nonisolated func requestToSync(from pts: UInt64) {
+        Task {
+            await _requestToSync(from: pts)
+        }
+    }
+    
+    private func _requestToSync(from pts: UInt64) {
+        guard stateMachine.currentState == signedInState else {
+            logger.warning("Currently not connected, abort the sync operation")
+            return
+        }
+        
+        let syncCommand = SyncCommand(devicePts: pts)
+        sendCommand(.sync(syncCommand))
     }
 }
